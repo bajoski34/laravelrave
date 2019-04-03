@@ -1,583 +1,179 @@
-<?php 
+<?php
 
 namespace KingFlamez\Rave;
 
-use Illuminate\Support\Facades\Config;
-use Illuminate\Support\Facades\Log;
+use stdClass;
 use Unirest\Request;
 use Unirest\Request\Body;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Http\Request as LaravelRequest;
 
 /**
  * Flutterwave's Rave payment laravel package
  * @author Oluwole Adebiyi - Flamez <flamekeed@gmail.com>
- * @version 1.0
+ * @version 1.2
  **/
 
 class Rave {
+
     protected $publicKey;
     protected $secretKey;
-    protected $amount;
     protected $paymentMethod = 'both';
-    protected $customDescription;
     protected $customLogo;
     protected $customTitle;
-    protected $country;
-    protected $currency;
-    protected $customerEmail;
-    protected $customerFirstname;
-    protected $customerLastname;
-    protected $customerPhone;
+    protected $secretHash;
     protected $txref;
     protected $integrityHash;
-    protected $payButtonText = 'Make Payment';
-    protected $redirectUrl;
-    protected $meta = array();
     protected $env = 'staging';
     protected $transactionPrefix;
-    protected $handler;
-    protected $stagingUrl = 'https://rave-api-v2.herokuapp.com';
-    protected $liveUrl = 'https://api.ravepay.co';
+    protected $urls = [
+        "live" => "https://api.ravepay.co",
+        "others" => "https://ravesandboxapi.flutterwave.com",
+    ];
     protected $baseUrl;
     protected $transactionData;
     protected $overrideTransactionReference;
-    protected $requeryCount = 0;
-    
+    protected $verifyCount = 0;
+    protected $request;
+    protected $unirestRequest;
+    protected $body;
+
     /**
      * Construct
      * @return object
      * */
-    function __construct(){
+    function __construct (LaravelRequest $request, Request $unirestRequest, Body $body) {
+        $this->request = $request;
+        $this->body = $body;
+        $this->unirestRequest= $unirestRequest;
         $prefix = Config::get('rave.prefix');
         $overrideRefWithPrefix = false;
-        // create a log channel
 
         $this->publicKey = Config::get('rave.publicKey');
         $this->secretKey = Config::get('rave.secretKey');
         $this->env = Config::get('rave.env');
         $this->customLogo = Config::get('rave.logo');
         $this->customTitle = Config::get('rave.title');
-        $this->transactionPrefix = $overrideRefWithPrefix ? $prefix : $prefix.'_';
+        $this->secretHash = Config::get('rave.secretHash');
+        $this->transactionPrefix = $prefix.'_';
         $this->overrideTransactionReference = $overrideRefWithPrefix;
 
-        $this->createReferenceNumber();
-        
-        if($this->env === 'staging'){
-            $this->baseUrl = $this->stagingUrl;
-        }elseif($this->env === 'live'){
-            $this->baseUrl = $this->liveUrl;
-        }else{
-            $this->baseUrl = $this->stagingUrl;
+
+        Log::notice('Generating Reference Number....');
+        if ($this->overrideTransactionReference) {
+            $this->txref = $this->transactionPrefix;
+        } else {
+            $this->txref = uniqid($this->transactionPrefix);
         }
-        
+        Log::notice('Generated Reference Number....' . $this->txref);
+
+        $this->baseUrl = $this->urls[($this->env === "live" ? "$this->env" : "others")];
+
         Log::notice('Rave Class Initializes....');
-        
-        return $this;
     }
-    
-    
+
+
+    /********************************************************************
+     ********************************************************************
+     * Modal Payment Start
+     ********************************************************************
+     ********************************************************************/
+
     /**
      * Generates a checksum value for the information to be sent to the payment gateway
      * @return object
      * */
-    function createCheckSum(){
+    public function createCheckSum($redirectURL){
+        if ($this->request->payment_method) {
+            $this->paymentMethod = $this->request->payment_method; // value can be card, account or both
+        }
+
+        if ($this->request->logo) {
+            $this->customLogo = $this->request->logo; // This might not be included if you have it set in your .env file
+        }
+
+        if ($this->request->title) {
+            $this->customTitle = $this->request->title; // This can be left blank if you have it set in your .env file
+        }
+
+        if ($this->request->ref) {
+            $this->txref = $this->request->ref;
+        }
+
         Log::notice('Generating Checksum....');
-        $options = array( 
-            "PBFPubKey" => $this->publicKey, 
-            "amount" => $this->amount, 
-            "customer_email" => $this->customerEmail, 
-            "customer_firstname" => $this->customerFirstname, 
-            "txref" => $this->txref, 
-            "payment_method" => $this->paymentMethod, 
-            "customer_lastname" => $this->customerLastname, 
-            "country" => $this->country, 
-            "currency" => $this->currency, 
-            "custom_description" => $this->customDescription, 
-            "custom_logo" => $this->customLogo, 
-            "custom_title" => $this->customTitle, 
-            "customer_phone" => $this->customerPhone,
-            "pay_button_text" => $this->payButtonText,
-            "redirect_url" => $this->redirectUrl,
-            "hosted_payment" => 1
+        $options = array(
+            "PBFPubKey" => $this->publicKey,
+            "amount" => $this->request->amount,
+            "customer_email" => $this->request->email,
+            "customer_firstname" => $this->request->firstname,
+            "txref" => $this->txref,
+            "payment_method" => $this->paymentMethod,
+            "customer_lastname" => $this->request->lastname,
+            "country" => $this->request->country,
+            "currency" => $this->request->currency,
+            "custom_description" => $this->request->description,
+            "custom_logo" => $this->customLogo,
+            "custom_title" => $this->customTitle,
+            "customer_phone" => $this->request->phonenumber,
+            "redirect_url" => $redirectURL
         );
+
+        if (!empty($this->request->paymentplan)) {
+            $options["payment_plan"] = $this->request->paymentplan;
+        }
         
+
         ksort($options);
-        
+
         $this->transactionData = $options;
-        
+
         $hashedPayload = '';
-        
-        foreach($options as $key => $value){
+
+        foreach($options as $value){
             $hashedPayload .= $value;
         }
 
         $completeHash = $hashedPayload.$this->secretKey;
-        $hash = hash('sha256', $completeHash);
-        
-        $this->integrityHash = $hash;
+
+        $this->integrityHash = hash('sha256', $completeHash);
         return $this;
-    }
-    
-    /**
-     * Generates a transaction reference number for the transactions
-     * @return object
-     * */
-    function createReferenceNumber(){
-        Log::notice('Generating Reference Number....');
-        if($this->overrideTransactionReference){
-            $this->txref = $this->transactionPrefix;
-        }else{
-            $this->txref = uniqid($this->transactionPrefix);
-        }
-        Log::notice('Generated Reference Number....'.$this->txref);
-        return $this;
-    }
-    
-    /**
-     * gets the current transaction reference number for the transaction
-     * @return string
-     * */
-    function getReferenceNumber(){
-        return $this->txref;
     }
 
 
-    /**
-     * Sets the public and secret key
-     * @param string $publicKey Your Rave publicKey. Sign up on https://rave.flutterwave.com to get one from your settings page
-     * @param string $secretKey Your Rave secretKey. Sign up on https://rave.flutterwave.com to get one from your settings page
-     * @return object
-     * */
-    public function setKeys($publicKey, $secretKey)
-    {
-        $this->publicKey = $publicKey;
-        $this->secretKey = $secretKey;
-        return $this;
-    }
 
-    /**
-     * Set the environment 
-     * @param string $env This can either be 'staging' or 'live'
-     * @return object
-     * */
-    public function setEnvironment($env)
-    {
-        $this->env = $env;
-        return $this;
-    }
-
-    /**
-     * Set the environment 
-     * @param string $prefix This is added to the front of your transaction reference numbers
-     * @param boolean $overrideRefWithPrefix Set this parameter to true to use your prefix as the transaction reference
-     * @return object
-     * */
-    public function setPrefix($prefix, $overrideRefWithPrefix=false)
-    {
-        $this->transactionPrefix = $overrideRefWithPrefix ? $prefix : $prefix.'_';
-        $this->overrideTransactionReference = $overrideRefWithPrefix;
-        $this->createReferenceNumber();
-        return $this;
-    }
-    
-    /**
-     * Sets the transaction amount
-     * @param integer $amount Transaction amount
-     * @return object
-     * */
-    function setAmount($amount){
-        $this->amount = $amount;
-        return $this;
-    }
-    
-    /**
-     * gets the transaction amount
-     * @return string
-     * */
-    function getAmount(){
-        return $this;
-    }
-    
-    /**
-     * Sets the allowed payment methods
-     * @param string $paymentMethod The allowed payment methods. Can be card, account or both 
-     * @return object
-     * */
-    function setPaymentMethod($paymentMethod){
-        $this->paymentMethod = $paymentMethod;
-        return $this;
-    }
-    
-    /**
-     * gets the allowed payment methods
-     * @return string
-     * */
-    function getPaymentMethod(){
-        return $this;
-    }
-    
-    /**
-     * Sets the transaction description
-     * @param string $customDescription The description of the transaction
-     * @return object
-     * */
-    function setDescription($customDescription){
-        $this->customDescription = $customDescription;
-        return $this;
-    }
-    
-    /**
-     * gets the transaction description
-     * @return string
-     * */
-    function getDescription(){
-        return $this->customDescription;
-    }
-    
-    /**
-     * Sets the payment page logo
-     * @param string $customLogo Your Logo
-     * @return object
-     * */
-    function setLogo($customLogo){
-        $this->customLogo = $customLogo;
-        return $this;
-    }
-    
-    /**
-     * gets the payment page logo
-     * @return string
-     * */
-    function getLogo(){
-        return $this->customLogo;
-    }
-    
-    /**
-     * Sets the payment page title
-     * @param string $customTitle A title for the payment. It can be the product name, your business name or anything short and descriptive 
-     * @return object
-     * */
-    function setTitle($customTitle){
-        $this->customTitle = $customTitle;
-        return $this;
-    }
-    
-    /**
-     * gets the payment page title
-     * @return string
-     * */
-    function getTitle(){
-        return $this->customTitle;
-    }
-    
-    /**
-     * Sets transaction country
-     * @param string $country The transaction country. Can be NG, US, KE, GH and ZA
-     * @return object
-     * */
-    function setCountry($country){
-        $this->country = $country;
-        return $this;
-    }
-    
-    /**
-     * gets the transaction country
-     * @return string
-     * */
-    function getCountry(){
-        return $this->country;
-    }
-    
-    /**
-     * Sets the transaction currency
-     * @param string $currency The transaction currency. Can be NGN, GHS, KES, ZAR, USD, EUR and GBP
-     * @return object
-     * */
-    function setCurrency($currency){
-        $this->currency = $currency;
-        return $this;
-    }
-    
-    /**
-     * gets the transaction currency
-     * @return string
-     * */
-    function getCurrency(){
-        return $this->currency;
-    }
-    
-    /**
-     * Sets the customer email
-     * @param string $customerEmail This is the paying customer's email
-     * @return object
-     * */
-    function setEmail($customerEmail){
-        $this->customerEmail = $customerEmail;
-        return $this;
-    }
-    
-    /**
-     * gets the customer email
-     * @return string
-     * */
-    function getEmail(){
-        return $this->customerEmail;
-    }
-    
-    /**
-     * Sets the customer firstname
-     * @param string $customerFirstname This is the paying customer's firstname
-     * @return object
-     * */
-    function setFirstname($customerFirstname){
-        $this->customerFirstname = $customerFirstname;
-        return $this;
-    }
-    
-    /**
-     * gets the customer firstname
-     * @return string
-     * */
-    function getFirstname(){
-        return $this->customerFirstname;
-    }
-    
-    /**
-     * Sets the customer lastname
-     * @param string $customerLastname This is the paying customer's lastname
-     * @return object
-     * */
-    function setLastname($customerLastname){
-        $this->customerLastname = $customerLastname;
-        return $this;
-    }
-    
-    /**
-     * gets the customer lastname
-     * @return string
-     * */
-    function getLastname(){
-        return $this->customerLastname;
-    }
-    
-    /**
-     * Sets the customer phonenumber
-     * @param string $customerPhone This is the paying customer's phonenumber
-     * @return object
-     * */
-    function setPhoneNumber($customerPhone){
-        $this->customerPhone = $customerPhone;
-        return $this;
-    }
-    
-    /**
-     * gets the customer phonenumber
-     * @return string
-     * */
-    function getPhoneNumber(){
-        return $this->customerPhone;
-    }
-    
-    /**
-     * Sets the payment page button text
-     * @param string $payButtonText This is the text that should appear on the payment button on the Rave payment gateway.
-     * @return object
-     * */
-    function setPayButtonText($payButtonText){
-        $this->payButtonText = $payButtonText;
-        return $this;
-    }
-    
-    /**
-     * gets payment page button text
-     * @return string
-     * */
-    function getPayButtonText(){
-        return $this->payButtonText;
-    }
-    
-    /**
-     * Sets the transaction redirect url
-     * @param string $redirectUrl This is where the Rave payment gateway will redirect to after completing a payment
-     * @return object
-     * */
-    function setRedirectUrl($redirectUrl){
-        $this->redirectUrl = $redirectUrl;
-        return $this;
-    }
-    
-    /**
-     * gets the transaction redirect url
-     * @return string
-     * */
-    function getRedirectUrl(){
-        return $this->redirectUrl;
-    }
-    
-    /**
-     * Sets the transaction meta data. Can be called multiple time to set multiple meta data
-     * @param array $meta This are the other information you will like to store with the transaction. It is a key => value array. eg. PNR for airlines, product colour or attributes. Example. array('name' => 'femi')
-     * @return object
-     * */
-    function setMetaData($meta){
-        array_push($this->meta, $meta);
-        return $this;
-    }
-    
-    /**
-     * gets the transaction meta data
-     * @return string
-     * */
-    function getMetaData(){
-        return $this->meta;
-    }
-    
-
-    /**
-     * Sets the data from the form
-     * @param string $redirectUrl The URL it redirects too after a transaction
-     * @return object
-     * */
-    public function setData($redirectURL)
-    {
-        $this->setAmount(request()->amount)
-        ->setDescription(request()->description)
-        ->setCountry(request()->country)
-        ->setCurrency(request()->currency)
-        ->setEmail(request()->email)
-        ->setFirstname(request()->firstname)
-        ->setLastname(request()->lastname)
-        ->setPhoneNumber(request()->phonenumber)
-        ->setPayButtonText(request()->pay_button_text)
-        ->setRedirectUrl($redirectURL);
-
-        if (request()->payment_method) {
-            $this->setPaymentMethod(request()->payment_method); // value can be card, account or both
-        }
-
-        if (request()->logo) {
-            $this->setLogo(request()->logo); // This might not be included if you have it set in your .env file
-        }
-
-        if (request()->title) {
-            $this->setTitle(request()->title); // This can be left blank if you have it set in your .env file
-        }
-
-        return $this;
-    }
-
-    /**
-     * Sets the event hooks for all available triggers
-     * @param object $handler This is a class that implements the Event Handler Interface
-     * @return object
-     * */
-    function eventHandler($handler){
-        $this->handler = $handler;
-        return $this;
-    }
-    
-    /**
-     * Requerys a previous transaction from the Rave payment gateway
-     * @param string $referenceNumber This should be the reference number of the transaction you want to requery
-     * @return object
-     * */
-    function requeryTransaction($referenceNumber){
-        $this->txref = $referenceNumber;
-        $this->requeryCount++;
-        Log::notice('Requerying Transaction....'.$this->txref);
-        if(isset($this->handler)){
-            $this->handler->onRequery($this->txref);
-        }
-
-        $data = array(
-            'txref' => $this->txref,
-            'SECKEY' => $this->secretKey,
-            'last_attempt' => '1'
-            // 'only_successful' => '1'
-        );
-
-        // make request to endpoint using unirest.
-        $headers = array('Content-Type' => 'application/json');
-        $body = Body::json($data);
-        $url = $this->baseUrl.'/flwv3-pug/getpaidx/api/xrequery';
-
-        // Make `POST` request and handle response with unirest
-        $response = Request::post($url, $headers, $body);
-  
-        //check the status is success
-        if ($response->body && $response->body->status === "success") {
-            if($response->body && $response->body->data && $response->body->data->status === "successful"){
-                Log::notice('Requeryed a successful transaction....'.json_encode($response->body->data));
-                // Handle successful
-                if(isset($this->handler)){
-                    $this->handler->onSuccessful($response->body->data);
-                }else{
-                    return $response->body->data;
-                }
-            }elseif($response->body && $response->body->data && $response->body->data->status === "failed"){
-                // Handle Failure
-                Log::warning('Requeryed a failed transaction....'.json_encode($response->body->data));
-                if(isset($this->handler)){
-                    $this->handler->onFailure($response->body->data);
-                }else{
-                    return $response->body->data;
-                }
-            }else{
-                // Handled an undecisive transaction. Probably timed out.
-                Log::warning('Requeryed an undecisive transaction....'.json_encode($response->body->data));
-                // I will requery again here. Just incase we have some devs that cannot setup a queue for requery. I don't like this.
-                if($this->requeryCount > 4){
-                    // Now you have to setup a queue by force. We couldn't get a status in 5 requeries.
-                    if(isset($this->handler)){
-                        $this->handler->onTimeout($this->txref, $response->body);
-                    }else{
-                        return $response->body;
-                    }
-                }else{
-                    Log::notice('delaying next requery for 3 seconds');
-                    sleep(3);
-                    Log::notice('Now retrying requery...');
-                    $this->requeryTransaction($this->txref);
-                }
-            }
-        }else{
-            Log::warning('Requery call returned error for transaction reference.....'.json_encode($response->body).'Transaction Reference: '. $this->txref);
-            // Handle Requery Error
-            if(isset($this->handler)){
-                $this->handler->onRequeryError($response->body);
-            }else{
-                return $response->body;
-            }
-        }
-        return $this;
-    }
-    
-    
     /**
      * Generates the final json to be used in configuring the payment call to the rave payment gateway
      * @return string
      * */
-    function initialize($redirectURL){
-        $this->setData($redirectURL);
-
-        if (!empty(request()->metadata)) {
-           $this->meta = json_decode(request()->metadata, true);
+    public function initialize($redirectURL)
+    {
+        $meta = array();
+        if (!empty($this->request->metadata)) {
+            $meta = json_decode($this->request->metadata, true);
         }
-
-        $this->createCheckSum();
-        $this->transactionData = array_merge($this->transactionData, array('integrity_hash' => $this->integrityHash), array('meta' => $this->meta));
-        
-        if(isset($this->handler)){
-            $this->handler->onInit($this->transactionData);
+      
+        $subAccounts = array();
+        if (!empty($this->request->subaccounts)) {
+            $subAccounts = json_decode($this->request->subaccounts, true);
         }
-        
+      
+        $this->createCheckSum($redirectURL);
+        $this->transactionData = array_merge($this->transactionData, array('data-integrity_hash' => $this->integrityHash), array('meta' => $meta));
+      
+        if (!empty($subAccounts)) {
+          $this->transactionData = array_merge($this->transactionData, array('subaccounts' => $subAccounts));
+        }
+      
         $json = json_encode($this->transactionData);
+
         echo '<html>';
         echo '<body>';
         echo '<center>Proccessing...<br /><img style="height: 50px;" src="https://media.giphy.com/media/swhRkVYLJDrCE/giphy.gif" /></center>';
-        echo '<script type="text/javascript" src="'.$this->baseUrl.'/flwv3-pug/getpaidx/api/flwpbf-inline.js"></script>';
+        echo '<script type="text/javascript" src="' . $this->baseUrl . '/flwv3-pug/getpaidx/api/flwpbf-inline.js"></script>';
         echo '<script>';
         echo 'document.addEventListener("DOMContentLoaded", function(event) {';
-        echo 'var data = JSON.parse(\''.$json.'\');';
+        echo 'var data = JSON.parse(\'' . $json . '\');';
         echo 'getpaidSetup(data);';
         echo '});';
         echo '</script>';
@@ -586,26 +182,911 @@ class Rave {
 
         return $json;
     }
-    
+
+
     /**
      * Handle canceled payments with this method
      * @param string $referenceNumber This should be the reference number of the transaction that was canceled
+     * @return mixed
+     * */
+    public function paymentCanceled($referenceNumber, $data)
+    {
+        $this->txref = $referenceNumber;
+        if (request()->cancelled) {
+            $cancelledResponse = '{"status": "cancelled" , "message": "Customer cancelled the transaction", "data":{ "status": "cancelled", "txRef" :"' . $this->txref . '"}}';
+            $resp = json_decode($cancelledResponse);
+            return $resp;
+        } else {
+            return $data;
+        }
+    }
+
+    /********************************************************************
+     ********************************************************************
+     * Modal Payment Ends
+     ********************************************************************
+     ********************************************************************/
+
+
+    /********************************************************************
+     ********************************************************************
+     * Miscs Start
+     ********************************************************************
+     ********************************************************************/
+
+
+    /**
+     * Refunds
      * @return object
      * */
-    function paymentCanceled($referenceNumber){
-        $this->txref = $referenceNumber;
-        Log::notice('Payment was canceled by user..'.$this->txref);
-        if(isset($this->handler)){
-            $this->handler->onCancel($this->txref);
-        }else{
-            $collection = collect(['status' => "canceled",
-                                'txref' => $this->txref ]);
-            return $collection->toJson();
+    public function refund()
+    {
+        $data = array(
+            'ref' => $this->request->ref,
+            'seckey' => $this->secretKey
+        );
+        
+        if (!empty($this->request->amount)) {
+            $data = array(
+                'amount' => $this->request->amount,
+                'ref' => $this->request->ref,
+                'seckey' => $this->secretKey
+            );
         }
-        return $this;
+        
+        // make request to endpoint using unirest.
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($data);
+        $url = $this->baseUrl . '/gpx/merchant/transactions/refund';
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+
+        return $response->body;
+    }
+
+
+    /**
+     * Exchange Rates
+     * @return object
+     * */
+    public function exchangeRates()
+    {
+        $data = array(
+            'origin_currency' => $this->request->origin_currency,
+            'destination_currency' => $this->request->destination_currency,
+            'seckey' => $this->secretKey
+        );
+        
+        if (!empty($this->request->amount)) {
+            $data = array(
+                'origin_currency' => $this->request->origin_currency,
+                'destination_currency' => $this->request->destination_currency,
+                'amount' => $this->request->amount,
+                'seckey' => $this->secretKey
+            );
+        }
+        
+        // make request to endpoint using unirest.
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($data);
+        $url = $this->baseUrl . '/gpx/merchant/transactions/refund';
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+
+        return $response->body;
+    }
+
+
+    /**
+     * Receive Webhook
+     * @param $secrethash 
+     * @return object
+     * */
+    public function receiveWebhook()
+    {
+        // Retrieve the request's body
+        $body = @file_get_contents("php://input");
+
+        // retrieve the signature sent in the reques header's.
+        $signature = (isset($_SERVER['verif-hash']) ? $_SERVER['verif-hash'] : '');
+
+        /* It is a good idea to log all events received. Add code *
+        * here to log the signature and body to db or file       */
+
+        if (!$signature) {
+            // only a post with rave signature header gets our attention
+            exit();
+        }
+
+        // Store the same signature on your server as an env variable and check against what was sent in the headers
+        $local_signature = $this->secretHash;
+
+        // confirm the event's signature
+        if( $signature !== $local_signature ){
+        // silently forget this ever happened
+        exit();
+        }
+
+        http_response_code(200); // PHP 5.4 or greater
+        // parse event (which is json string) as object
+        // Give value to your customer but don't give any output
+        // Remember that this is a call from rave's servers and 
+        // Your customer is not seeing the response here at all
+        $response = json_decode($body);
+        return $response;
+    }
+
+
+    /**
+     * Used for KYC to validate bvn
+     * @param string $bvn the customers bvn
+     * @return object
+     * */
+    public function validateBVN($bvn)
+    {
+        $url = $this->baseUrl . '/kyc/bvn/'.$bvn.'?seckey=' . $this->secretKey;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+
+        return $response;
+    }
+
+
+    /********************************************************************
+     ********************************************************************
+     * Miscs End
+     ********************************************************************
+     ********************************************************************/
+
+
+
+    /********************************************************************
+     ********************************************************************
+     * Charges Start
+     ********************************************************************
+     ********************************************************************/
+
+    /**
+     * Verifies a transaction with the transaction reference
+     * @param string $referenceNumber This should be the reference number of the transaction you want to verify
+     * @return object
+     * */
+    public function verifyTransaction($referenceNumber)
+    {
+        $this->txref = $referenceNumber;
+        $this->verifyCount++;
+        Log::notice('Verifying Transaction....' . $this->txref);
+
+        $data = array(
+            'txref' => $this->txref,
+            'SECKEY' => $this->secretKey,
+            'last_attempt' => '1'
+            // 'only_successful' => '1'
+        );
+        
+        // make request to endpoint using unirest.
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($data);
+        $url = $this->baseUrl . '/flwv3-pug/getpaidx/api/v2/verify';
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        } else {
+            if ($this->verifyCount > 4) {
+                $this->paymentCanceled($this->txref, $response->body);
+            } else {
+                sleep(3);
+                $this->verifyTransaction($this->txref);
+            }
+        }
+    }
+
+    /********************************************************************
+     ********************************************************************
+     * Charges End
+     ********************************************************************
+     ********************************************************************/
+    
+
+    /********************************************************************
+     ********************************************************************
+     * Payment Plans Start
+     ********************************************************************
+     ********************************************************************/
+
+    /**
+     * Creates a payment plan
+     * @return object
+     * */
+    public function createPaymentPlan()
+    {
+
+        $data = array(
+            'amount' => $this->request->amount,
+            'interval' => $this->request->interval,
+            'name' => $this->request->name,
+            'duration' => $this->request->duration,
+            'seckey' => $this->secretKey
+        );
+        
+        // make request to endpoint using unirest.
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($data);
+        $url = $this->baseUrl . '/v2/gpx/paymentplans/create';
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+
+        return $response->body;
+    }
+
+    /**
+     * Edits a payment plan
+     * @param id $id This is the payment plan id
+     * @return object
+     * */
+    public function editPaymentPlan($id)
+    {
+
+        $data = array(
+            'name' => $this->request->name,
+            'status' => $this->request->status,
+            'seckey' => $this->secretKey
+        );
+        
+        // make request to endpoint using unirest.
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($data);
+        $url = $this->baseUrl . '/v2/gpx/paymentplans/'.$id.'/edit';
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+
+        return $response->body;
+    }
+
+    /**
+     * Cancels a payment plan
+     * @param id $id This is the payment plan id
+     * @return object
+     * */
+    public function cancelPaymentPlan($id)
+    {
+
+        $data = array(
+            'seckey' => $this->secretKey
+        );
+        
+        // make request to endpoint using unirest.
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($data);
+        $url = $this->baseUrl . '/v2/gpx/paymentplans/'.$id.'/cancel';
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+
+        return $response->body;
+    }
+
+
+    /**
+     * List all the payment plans
+     * @return object
+     * */
+    public function listPaymentPlans()
+    {
+        $url = $this->baseUrl . '/v2/gpx/paymentplans/query?seckey=' . $this->secretKey;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+
+        return $response;
+    }
+
+    /**
+     * Fetches a payment plan
+     * @return object
+     * */
+    public function fetchPaymentPlan($id='', $q='')
+    {
+        $url = $this->baseUrl . '/v2/gpx/paymentplans/query?seckey=' . $this->secretKey . '&q='.$q.'&id='.$id;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+
+        return $response;
+    }
+
+
+    /********************************************************************
+     ********************************************************************
+     * Payment Plans End
+     ********************************************************************
+     ********************************************************************/
+
+    /********************************************************************
+     ********************************************************************
+     * Subscriptions Plans Start
+     ********************************************************************
+     ********************************************************************/
+
+    /**
+     * List all the subscriptions
+     * @return object
+     * */
+    public function listSubscriptions()
+    {
+        $url = $this->baseUrl . '/v2/gpx/subscriptions/query?seckey=' . $this->secretKey;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+
+        return $response;
+    }
+
+
+    /**
+     * Fetches a subscription
+     * @return object
+     * */
+    public function fetchSubscription($id = '', $email = '')
+    {
+        $url = $this->baseUrl . '/v2/gpx/subscriptions/query?seckey=' . $this->secretKey . '&email=' . $email . '&id=' . $id;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+
+        return $response;
+    }
+
+    /**
+     * Cancels a subscription
+     * @param id $id This is the subscription id
+     * @return object
+     * */
+    public function cancelSubscription($id)
+    {
+
+        $data = array(
+            'seckey' => $this->secretKey
+        );
+        
+        // make request to endpoint using unirest.
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($data);
+        $url = $this->baseUrl . '/v2/gpx/subscriptions/' . $id . '/cancel';
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+
+        return $response->body;
+    }
+
+    /**
+     * Activates a subscription
+     * @param id $id This is the subscription id
+     * @return object
+     * */
+    public function activateSubscription($id)
+    {
+
+        $data = array(
+            'seckey' => $this->secretKey
+        );
+        
+        // make request to endpoint using unirest.
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($data);
+        $url = $this->baseUrl . '/v2/gpx/subscriptions/' . $id . '/activate';
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+
+        return $response->body;
+    }
+
+    /********************************************************************
+     ********************************************************************
+     * Subscriptions Plans End
+     ********************************************************************
+     ********************************************************************/
+
+
+
+    /********************************************************************
+     ********************************************************************
+     * Sub acccount Begin
+     ********************************************************************
+     ********************************************************************/
+
+    /**
+     * Registers a new sub account on Rave.
+     *
+     * @return mixed|object
+     *
+     * @throws \Unirest\Exception
+     */
+    public function createSubAccount()
+    {
+        $meta = [];
+
+        if (!empty($this->request->metadata)) {
+            $meta = json_decode($this->request->metadata, true);
+        }
+
+        $data = [
+            'account_bank' => $this->request->account_bank,
+            'account_number' => $this->request->account_number,
+            'business_name' => $this->request->business_name,
+            'business_email' => $this->request->business_email,
+            'business_contact' => $this->request->business_contact,
+            'business_contact_mobile' => $this->request->business_contact_mobile,
+            'business_mobile' => $this->request->business_mobile,
+            'meta' => $meta,
+            'seckey' => $this->secretKey,
+            'split_type' => $this->request->split_type,
+            'split_value' => $this->request->split_value
+        ];
+
+        // Make request to endpoint using unirest.
+        $headers = ['Content-Type' => 'application/json'];
+        $body = $this->body->json($data);
+        $url = $this->baseUrl . '/v2/gpx/subaccounts/create';
+
+        // Make `POST` request and handle response with unirest.
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        return $response->body;
+    }
+
+     /* List all the sub accounts
+     * @return object
+     * */
+    public function listSubAccount()
+    {
+        $url = $this->baseUrl . '/v2/gpx/subaccounts/?seckey='. $this->secretKey;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+
+        return $response;
+    }
+        /**
+     * Fetches a sub account
+     * @return object
+     * */
+    public function fetchSubAccount($id)
+    {
+        $id = $this->request->id;
+        $url = $this->baseUrl . '/v2/gpx/subaccounts/get/'.$id.'?seckey=' . $this->secretKey;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+
+        return $response;
+    }
+
+
+     /********************************************************************
+     ********************************************************************
+     * Sub acccount Ends
+     ********************************************************************
+     ********************************************************************/
+
+
+      /********************************************************************
+     ********************************************************************
+     * Transfer Begin
+     ********************************************************************
+     ********************************************************************/
+      /**
+
+     * Initialiate a transfer
+     * @return object
+     * */
+
+     public function initiateTransfer($arrdata) 
+     {
+       // make request to endpoint using unirest.
+         $headers = array('Content-Type' => 'application/json');
+         $body = $this->body->json($arrdata);
+         $url = $this->baseUrl . '/v2/gpx/transfers/create';
+         // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+        return $response->body;
+     }
+
+           /**
+
+     * Initialiate a bulk transfer
+     * @return object
+     * */
+    public function bulkTransfer($arrdata) 
+    {
+            // make request to endpoint using unirest.
+            $headers = array('Content-Type' => 'application/json');
+            $body = $this->body->json($arrdata);
+            $url = $this->baseUrl . '/v2/gpx/transfers/create_bulk';
+            // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+
+        return $response->body;
+
+    }
+             /**
+     * Fetches a transfer
+     * @return object
+     * */
+    public function fetchTransfer($id= '', $q= '', $reference= '') 
+    {
+        $url = $this->baseUrl . '/v2/gpx/transfers?seckey=' . $this->secretKey . '&q='.$q.'&id='.$id. '&reference='.$reference;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+        return $response;
+    }
+
+    /* List all the Transfers
+     * @return object
+     * */
+    public function listTransfers()
+    {
+        $data = array(
+            'seckey' => $this->secretKey
+        );
+        $url = $this->baseUrl . '/v2/gpx/transfers?seckey='. $this->secretKey;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+        return $response;
+    }
+    /* Retrieve status of Bulk Transfers
+     * @return object
+     * */
+
+    public function retrieveStatusofBulkTransfers($patch_id= '')
+    {
+        $url = $this->baseUrl . '/v2/gpx/transfers?seckey='. $this->secretKey. '&patch_id='. $patch_id;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+        return $response;
+    }
+
+    /* Get the applicable transfer fee
+     * @return object
+     * */
+    public function getApplicableTransferFee($currency)
+    {
+        $url = $this->baseUrl . '/v2/gpx/transfers?seckey='. $this->secretKey. '&currency='. $currency;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        return $response;
+    }
+
+    /* Get the Transfer Balance
+     * @return object
+     * */
+    public function getTransferBalance($currency) 
+    {
+        $url = $this->baseUrl . '/v2/gpx/balance?seckey='. $this->seckey. '&currency='. $currency;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers);
+
+        return $response;
     }
     
-}
+    /* Account Verification
+     * @return object
+     * */
+    public function accountVerification($arrdata) 
+    {
+        $body = $this->body->json($arrdata);
+        $url = $this->baseUrl . '/flwv3-pug/getpaidx/api/resolve_account';
+        $headers = array('Content-Type' => 'application/json');
 
-// silencio es dorado
-?>
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($url, $headers, $body);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+        return $response;
+    }
+
+
+     /********************************************************************
+     ********************************************************************
+     * Transfer End
+     ********************************************************************
+     ********************************************************************/
+
+
+      /********************************************************************
+     ********************************************************************
+     *  PREAUTHORIZED TRANSACTIONS Begin
+     ********************************************************************
+     ********************************************************************/
+
+    /* PreAuthorise Card
+     * @return object
+     * */
+    public function preAuthouriseCard($arrdata)
+    {
+        $body = $this->body->json($arrdata);
+        $url = $this->baseUrl . '/flwv3-pug/getpaidx/api/charge';
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($body , $url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+        return $response;
+    }
+
+    /* Capture card
+     * @return object
+     * */
+    public function capture($arrdata) 
+    {
+        $body = $this->body->json($arrdata);
+        $url = $this->baseUrl . '/flwv3-pug/getpaidx/api/capture';
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->post($body , $url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+        return $response;
+    }
+
+    /* Refund
+     * @return object
+     * */
+    
+     public function refundPreAuthCard($arrdata) 
+     {
+         $body = $this->body->json($arrdata);
+        $url = $this->baseUrl . '/flwv3-pug/getpaidx/api/refundorvoid';
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->post($body , $url, $headers);
+
+        //check the status is success
+        if ($response->body) {
+            return $response->body;
+        }
+
+        return $response;
+     }
+    /********************************************************************
+     ********************************************************************
+     * PreAuntorise transaction End
+     ********************************************************************
+     ********************************************************************/
+
+    
+    /********************************************************************
+     ********************************************************************
+     * Miscellaneous Start
+     ********************************************************************
+     ********************************************************************/
+
+    /* Get fees
+     * @return object
+     * */
+
+     public function getFees($arrdata) 
+     {
+         $body = $this->body->json($arrdata);
+         $url = $this->baseUrl . '/flwv3-pug/getpaidx/api/fee';
+         $headers = array('Content-Type' => 'application/json');
+ 
+         // Make `GET` request and handle response with unirest
+         $response = $this->unirestRequest->get($body, $url, $headers);
+ 
+         //check the status is success
+         if ($response->body) {
+             return $response->body;
+         }
+ 
+         return $response;
+     }
+
+    /* List of Direct bank Charge
+     * @return object
+     * */
+     public function listofDirectBankCharge() 
+     {
+        $url = $this->baseUrl . '/flwv3-pug/getpaidx/api/flwpbf-banks.js?json=1';
+        $headers = array('Content-Type' => 'application/json');
+
+        //Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+        return $response;
+     }
+
+     /* Exchange Rate
+     * @return object
+     * */
+     public function exchangeRate($arrdata)
+      {
+        $url = $this->baseUrl . '/flwv3-pug/getpaidx/api/forex';
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($arrdata);
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($body, $url, $headers);
+
+        // check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+        return $response;
+     }
+
+    /* List Transactions
+     * @return object
+     * */
+     public function listTransactions($arrdata)
+      {
+        $url = $this->baseUrl . '/v2/gpx/transactions/query';
+        $headers = array('Content-Type' => 'application/json');
+        $body = $this->body->json($arrdata);
+
+        // Make `POST` request and handle response with unirest
+        $response = $this->unirestRequest->post($body, $url, $headers);
+
+        // check the status is success
+        if ($response->body && $response->body->status === "success") {
+            return $response->body;
+        }
+        return $response;
+     }
+
+    /* List of Bank for Transfer
+     * @return object
+     * */
+
+     public function listofBankForTransfer($country) 
+     {
+        $url = $this->baseUrl . '/banks?'. '&$country='. $country;
+        $headers = array('Content-Type' => 'application/json');
+
+        // Make `GET` request and handle response with unirest
+        $response = $this->unirestRequest->get($url, $headers);
+
+        return $response;
+
+     }
+
+    /********************************************************************
+     ********************************************************************
+     * Miscellaneous Ends
+     ********************************************************************
+     ********************************************************************/
+}
