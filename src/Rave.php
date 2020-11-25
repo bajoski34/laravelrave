@@ -19,7 +19,7 @@ class Rave {
 
     protected $publicKey;
     protected $secretKey;
-    protected $paymentMethod = 'both';
+    protected $paymentMethod = 'card,account,mpesa,mobilemoneyghana,mobilemoneyuganda,mobilemoneyrwanda,mobilemoneyzambia,mobilemoneytanzania';
     protected $customLogo;
     protected $customTitle;
     protected $secretHash;
