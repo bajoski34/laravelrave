@@ -174,9 +174,10 @@ class Rave {
         echo '<script>';
         echo 'document.addEventListener("DOMContentLoaded", function(event) {';
         echo 'var data = JSON.parse(\'' . $json . '\');';
+        echo 'data.onclose = () => { window.location="'.$_SERVER['HTTP_REFERER'].'" };';
         echo 'getpaidSetup(data);';
         echo '});';
-        echo '</script>';
+        echo '</script>'; 
         echo '</body>';
         echo '</html>';
 
