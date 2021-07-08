@@ -32,6 +32,10 @@
 
 `php artisan vendor:publish --provider="Flutterwave\Rave\RaveServiceProvider"`
 
+##Sample Project using this package
+
+find a sample project [here](https://github.com/bajoski34/flwstore)
+
 ## ToDo
 
 -   Support Direct Charges
