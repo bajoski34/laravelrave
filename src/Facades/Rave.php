@@ -9,7 +9,7 @@
  * file that was distributed with this source code.
  */
 
-namespace KingFlamez\Rave\Facades;
+namespace Flutterwave\Rave\Facades;
 
 use Illuminate\Support\Facades\Facade;
 
