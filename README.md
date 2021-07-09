@@ -43,7 +43,7 @@ find a sample project [here](https://github.com/bajoski34/flwstore)
 
 ## Credits
 
--   [Oluwole Adebiyi][https://github.com/kingflamez]
+-   [Oluwole Adebiyi](https://github.com/kingflamez)
 -   [Ifunanya Ikemma](https://github.com/Iphytech)
 -   [Emmanuel Okeke](https://github.com/emmanix2002)
 -   [Adebayo Mustafa](https://github.com/AdebsAlert)
