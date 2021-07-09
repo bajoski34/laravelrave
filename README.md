@@ -58,3 +58,4 @@ The MIT License (MIT). Please see [License File](LICENSE.md) for more informatio
 [ico-downloads]: https://img.shields.io/packagist/dt/flutterwavedev/flutterwavelaravel.svg?style=flat-square
 [link-packagist]: https://packagist.org/packages/flutterwavedev/flutterwavelaravel
 [ico-license]: https://img.shields.io/badge/version-1.0.1-green.svg?style=flat-square
+[link-downloads]: https://packagist.org/packages/flutterwavedev/flutterwavelaravel
