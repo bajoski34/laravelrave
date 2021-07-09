@@ -54,5 +54,6 @@ find a sample project [here](https://github.com/bajoski34/flwstore)
 
 The MIT License (MIT). Please see [License File](LICENSE.md) for more information.
 
+[ico-version]: https://img.shields.io/packagist/v/flutterwavedev/flutterwavelaravel.svg?style=flat-square
 [ico-downloads]: https://img.shields.io/packagist/dt/flutterwavedev/flutterwavelaravel.svg?style=flat-square
 [link-packagist]: https://packagist.org/packages/flutterwavedev/flutterwavelaravel
