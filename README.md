@@ -43,7 +43,7 @@ find a sample project [here](https://github.com/bajoski34/flwstore)
 
 ## Credits
 
--   [Oluwole Adebiyi (Flamez)][link-author]
+-   [Oluwole Adebiyi][https://github.com/kingflamez]
 -   [Emmanuel Okeke](https://github.com/emmanix2002)
 -   [Adebayo Mustafa](https://github.com/AdebsAlert)
 -   [Tunde Aromire](https://github.com/toondaey)
@@ -53,3 +53,6 @@ find a sample project [here](https://github.com/bajoski34/flwstore)
 ## License
 
 The MIT License (MIT). Please see [License File](LICENSE.md) for more information.
+
+[ico-downloads]: https://img.shields.io/packagist/dt/flutterwavedev/flutterwavelaravel.svg?style=flat-square
+[link-packagist]: hhttps://packagist.org/packages/flutterwavedev/flutterwavelaravel
