@@ -26,7 +26,7 @@
 
 3. make sure you add Flutterwave to the aliases
 
-`'Flutterwave' => KingFlamez\Rave\Facades\Rave::class`
+`'Flutterwave' => Flutterwave\Rave\Facades\Rave::class`
 
 4. run the command on your terminal
 
